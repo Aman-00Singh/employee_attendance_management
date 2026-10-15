@@ -1,0 +1,16 @@
+# DECISIONS.md (about 150-200 words in total - plain language, your own words)
+
+1. `Indexes`->Unique employees.emp_code prevents duplicates; unique attendance_logs(emp_code, date) it make sures one record per employee/day ; (department, emp_code) supports filtered employee listing; employees.joined_on supports month-end eligibility; attendance_logs(date DESC, emp_code ASC) supports attendance sorting; (emp_code, punch_in DESC) helps punch-out.
+   we rejected for now the status indexing because many of the status would naturally be marked as Present in real world scenario which will automatically leads to search a lot of rows even if it is indexed and the status col has very low cardinality/distinct values,and indexing a lot of col may increase the reads , but has a tradeoff for the write opertaions and storage as well .
+
+2. `Punch-In-race` -> Previously the check was not on the DB level which couldnt handle if the two requests for the same employee A arrives , as both simultaneous requests checks the db current state even before any of the request would insert/change the state the second request also reads the previous request which leads to both insetion, so we created a unique compount index on (emp_code, date),at the DB level and insert at the db collection handling the concurrency issue whereas the other request will be handled by duplicate key error as 409.
+
+3. `Ties` -> We use MongoDB's $setWindowFields to calculate rankings while keeping each employee's record separate. Its $rank function assigns ranks based on total late minutes in descending order and gives employees with equal totals the same rank. For example, if two employees share rank 3, the next rank is 5.
+
+Late minutes are calculated by comparing an employee's punch-in time with their scheduled shift start time. An employee is considered late only when they arrive more than 10 minutes after the shift starts, and the late duration is calculated in whole minutes.
+
+We then filter employees whose rank is less than or equal to the requested limit. If multiple employees are tied at the cutoff rank, all of them are included, even if the total number of employees exceeds the limit. This ensures fair treatment for employees with equal results. Finally, we sort by total late minutes in descending order and emp_code in ascending order for consistent output.
+
+4. `Headcount` -> The department summary starts its aggregation from the employees collection instead of attendance_logs. It includes employees whose joined_on date is on or before the end of the selected month and uses $lookup to find their attendance records. This ensures employees with zero attendance logs are still counted in the department's headcount, while their attendance data remain zero or null .
+
+5. `One thing I would change` -> For the current apis if it has to serve 100x data then i would introduce precomputed monthly analytics summaries instead of aggregating raw attendance logs for evry analytics req. A background worker would update the relevant summmaries whenever any records are created / modified, so it would be easy to read from the precomputed results instead of recalculating the metrics for every req. through millions of records.
